@@ -1,0 +1,12 @@
+venv/
+__pycache__/
+*.pyc
+uploads/*
+processed/*
+!uploads/.gitkeep
+!processed/.gitkeep
+ref-skyrooth/
+dist/
+build/
+*.spec
+.env
