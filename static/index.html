@@ -10,27 +10,28 @@
       position: absolute;
       border: 2px solid #ef4444;
       background: rgba(239, 68, 68, 0.28);
-      pointer-events: none;
       box-sizing: border-box;
+      pointer-events: auto;
     }
     .selection-box.box-0 {
       border-color: #3b82f6;
-      background: rgba(59, 130, 246, 0.3);
+      background: rgba(59, 130, 246, 0.28);
     }
     .selection-box.box-1 {
       border-color: #10b981;
-      background: rgba(16, 185, 129, 0.3);
+      background: rgba(16, 185, 129, 0.28);
     }
     .box-badge {
       position: absolute;
-      top: -20px;
+      top: -24px;
       left: 0;
-      font-size: 10px;
-      font-weight: bold;
-      padding: 1px 6px;
+      font-size: 11px;
+      font-weight: 700;
+      padding: 2px 7px;
       border-radius: 4px;
       color: white;
       white-space: nowrap;
+      user-select: none;
     }
   </style>
 </head>
@@ -63,26 +64,29 @@
     <div id="workspace" class="hidden space-y-6">
       <div class="bg-slate-900 border border-slate-800 rounded-xl p-5">
         
-        <!-- Video Player & Marker Section -->
+        <!-- Video Header -->
         <div class="flex items-center justify-between mb-3">
           <div>
             <h2 class="font-semibold text-sm text-slate-200">1. Video Preview & Seleksi Kotak</h2>
-            <p class="text-xs text-slate-400">Putar video ke frame watermark. Klik tombol <span class="text-indigo-400 font-semibold">"Tandai Watermark"</span> lalu seret kursor pada video. Maksimal 2 kotak.</p>
+            <p class="text-xs text-slate-400">Video tetap bisa diputar dan di-seek kapan saja. Aktifkan tombol gambar untuk menandai area.</p>
           </div>
           <div class="text-xs font-mono text-slate-400" id="boxCountBadge">0 / 2 Area Ditandai</div>
         </div>
 
-        <!-- Video Player with Overlay Canvas -->
-        <div class="relative bg-black rounded-lg overflow-hidden border border-slate-800 flex justify-center items-center select-none" id="playerContainer">
-          <video id="playerVideo" controls playsinline class="max-h-[500px] w-auto max-w-full block"></video>
-          
-          <!-- Drawing Overlay Surface -->
-          <div id="drawOverlay" class="absolute inset-0 cursor-crosshair hidden z-20">
-            <!-- Dynamic selection boxes appear here -->
+        <!-- Video Wrapper: size shrink-wrapped to video -->
+        <div class="bg-black rounded-lg overflow-hidden border border-slate-800 flex justify-center items-center">
+          <div class="relative inline-block select-none" id="videoWrapper">
+            <video id="playerVideo" controls playsinline class="max-h-[500px] w-auto max-w-full block"></video>
+            
+            <!-- Persistent visual boxes layer (always visible, clicks pass through unless in draw mode) -->
+            <div id="boxesLayer" class="absolute inset-0 pointer-events-none z-10"></div>
+
+            <!-- Drawing Canvas Overlay (active only when drawing mode is ON) -->
+            <div id="drawOverlay" class="absolute inset-0 cursor-crosshair hidden z-20 bg-black/15"></div>
           </div>
         </div>
 
-        <!-- Toolbar for marking -->
+        <!-- Toolbar -->
         <div class="flex flex-wrap items-center justify-between gap-3 mt-3 pt-3 border-t border-slate-800">
           <div class="flex items-center gap-2">
             <button id="toggleDrawBtn" class="bg-indigo-600 hover:bg-indigo-500 text-white text-xs px-4 py-2 rounded font-medium transition shadow flex items-center gap-1.5">
@@ -92,7 +96,7 @@
               Reset Semua Kotak
             </button>
           </div>
-          <div id="boxListInfo" class="text-xs font-mono text-slate-400 flex gap-3">
+          <div id="boxListInfo" class="text-xs font-mono text-slate-400 flex flex-wrap gap-3">
             <span class="text-slate-500">Belum ada watermark dipilih</span>
           </div>
         </div>
@@ -108,13 +112,13 @@
             </select>
           </div>
           <div class="flex items-end">
-            <div class="text-xs text-slate-500">
-              Tips: Jeda (Pause) video pada detik yang diinginkan agar watermark tidak bergeser saat ditandai.
+            <div class="text-xs text-slate-400">
+              💡 Kotak tidak hilang saat video diputar atau digeser durasinya.
             </div>
           </div>
           <div class="flex items-end">
             <button id="processBtn" class="w-full bg-emerald-600 hover:bg-emerald-500 text-xs py-2.5 rounded text-white font-semibold shadow transition">
-              Mulai Hapus Watermark (2 Area) 🚀
+              Mulai Hapus Watermark 🚀
             </button>
           </div>
         </div>
@@ -139,16 +143,17 @@
 
   <script>
     let fileData = null;
-    let boxes = []; // [{x, y, w, h, screenX, screenY, screenW, screenH}]
+    let boxes = []; // [{x, y, w, h, normX, normY, normW, normH}] normalised 0..1
     let isDrawingMode = false;
     let isMouseDown = false;
     let startX = 0, startY = 0;
-    let activeBoxEl = null;
+    let tempBoxEl = null;
 
     const videoInput = document.getElementById('videoInput');
     const uploadProgress = document.getElementById('uploadProgress');
     const workspace = document.getElementById('workspace');
     const playerVideo = document.getElementById('playerVideo');
+    const boxesLayer = document.getElementById('boxesLayer');
     const drawOverlay = document.getElementById('drawOverlay');
     const toggleDrawBtn = document.getElementById('toggleDrawBtn');
     const toggleDrawText = document.getElementById('toggleDrawText');
@@ -199,8 +204,7 @@
         drawOverlay.classList.remove('hidden');
         toggleDrawBtn.classList.replace('bg-indigo-600', 'bg-amber-600');
         toggleDrawBtn.classList.replace('hover:bg-indigo-500', 'hover:bg-amber-500');
-        toggleDrawText.innerText = 'Selesai / Batal Gambar';
-        playerVideo.pause(); // Pause saat menggambar agar stabil
+        toggleDrawText.innerText = 'Selesai Gambar (Batal)';
       } else {
         drawOverlay.classList.add('hidden');
         toggleDrawBtn.classList.replace('bg-amber-600', 'bg-indigo-600');
@@ -209,7 +213,6 @@
       }
     }
 
-    // Mouse events on overlay
     drawOverlay.addEventListener('mousedown', (e) => {
       if (!isDrawingMode || boxes.length >= 2) return;
       const rect = drawOverlay.getBoundingClientRect();
@@ -217,23 +220,17 @@
       startY = e.clientY - rect.top;
       isMouseDown = true;
 
-      activeBoxEl = document.createElement('div');
-      activeBoxEl.className = `selection-box box-${boxes.length}`;
-      activeBoxEl.style.left = startX + 'px';
-      activeBoxEl.style.top = startY + 'px';
-      activeBoxEl.style.width = '0px';
-      activeBoxEl.style.height = '0px';
-
-      const badge = document.createElement('div');
-      badge.className = `box-badge ${boxes.length === 0 ? 'bg-blue-600' : 'bg-emerald-600'}`;
-      badge.innerText = `Watermark #${boxes.length + 1}`;
-      activeBoxEl.appendChild(badge);
-
-      drawOverlay.appendChild(activeBoxEl);
+      tempBoxEl = document.createElement('div');
+      tempBoxEl.className = `selection-box box-${boxes.length}`;
+      tempBoxEl.style.left = startX + 'px';
+      tempBoxEl.style.top = startY + 'px';
+      tempBoxEl.style.width = '0px';
+      tempBoxEl.style.height = '0px';
+      drawOverlay.appendChild(tempBoxEl);
     });
 
     window.addEventListener('mousemove', (e) => {
-      if (!isMouseDown || !activeBoxEl) return;
+      if (!isMouseDown || !tempBoxEl) return;
       const rect = drawOverlay.getBoundingClientRect();
       const currentX = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
       const currentY = Math.max(0, Math.min(e.clientY - rect.top, rect.height));
@@ -243,17 +240,17 @@
       const w = Math.abs(currentX - startX);
       const h = Math.abs(currentY - startY);
 
-      activeBoxEl.style.left = x + 'px';
-      activeBoxEl.style.top = y + 'px';
-      activeBoxEl.style.width = w + 'px';
-      activeBoxEl.style.height = h + 'px';
+      tempBoxEl.style.left = x + 'px';
+      tempBoxEl.style.top = y + 'px';
+      tempBoxEl.style.width = w + 'px';
+      tempBoxEl.style.height = h + 'px';
     });
 
     window.addEventListener('mouseup', (e) => {
       if (!isMouseDown) return;
       isMouseDown = false;
 
-      if (!activeBoxEl) return;
+      if (!tempBoxEl) return;
       const rect = drawOverlay.getBoundingClientRect();
       const currentX = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
       const currentY = Math.max(0, Math.min(e.clientY - rect.top, rect.height));
@@ -263,35 +260,52 @@
       const screenW = Math.abs(currentX - startX);
       const screenH = Math.abs(currentY - startY);
 
-      // Jika drag terlalu kecil (klik tidak sengaja), buang
-      if (screenW < 8 || screenH < 8) {
-        activeBoxEl.remove();
-        activeBoxEl = null;
-        return;
-      }
+      tempBoxEl.remove();
+      tempBoxEl = null;
 
-      // Hitung koordinat video asli
-      const videoRect = playerVideo.getBoundingClientRect();
-      const scaleX = fileData.width / videoRect.width;
-      const scaleY = fileData.height / videoRect.height;
+      // Filter klik tidak sengaja (terlalu kecil)
+      if (screenW < 8 || screenH < 8) return;
+
+      const normX = screenX / rect.width;
+      const normY = screenY / rect.height;
+      const normW = screenW / rect.width;
+      const normH = screenH / rect.height;
 
       const realBox = {
-        x: Math.round(screenX * scaleX),
-        y: Math.round(screenY * scaleY),
-        w: Math.round(screenW * scaleX),
-        h: Math.round(screenH * scaleY),
-        el: activeBoxEl
+        x: Math.round(normX * fileData.width),
+        y: Math.round(normY * fileData.height),
+        w: Math.round(normW * fileData.width),
+        h: Math.round(normH * fileData.height),
+        normX, normY, normW, normH
       };
 
       boxes.push(realBox);
-      activeBoxEl = null;
+      renderPersistentBoxes();
       renderBoxStatus();
 
-      if (boxes.length >= 2) {
-        isDrawingMode = false;
-        updateDrawingState();
-      }
+      // Matikan drawing mode otomatis agar user bebas play/pause video langsung
+      isDrawingMode = false;
+      updateDrawingState();
     });
+
+    function renderPersistentBoxes() {
+      boxesLayer.innerHTML = '';
+      boxes.forEach((b, idx) => {
+        const boxDiv = document.createElement('div');
+        boxDiv.className = `selection-box box-${idx}`;
+        boxDiv.style.left = (b.normX * 100) + '%';
+        boxDiv.style.top = (b.normY * 100) + '%';
+        boxDiv.style.width = (b.normW * 100) + '%';
+        boxDiv.style.height = (b.normH * 100) + '%';
+
+        const badge = document.createElement('div');
+        badge.className = `box-badge ${idx === 0 ? 'bg-blue-600' : 'bg-emerald-600'}`;
+        badge.innerText = `Watermark #${idx + 1} (${b.w}x${b.h})`;
+        boxDiv.appendChild(badge);
+
+        boxesLayer.appendChild(boxDiv);
+      });
+    }
 
     function renderBoxStatus() {
       boxCountBadge.innerText = `${boxes.length} / 2 Area Ditandai`;
@@ -308,10 +322,8 @@
     }
 
     function clearBoxes() {
-      boxes.forEach(b => {
-        if (b.el && b.el.parentNode) b.el.remove();
-      });
       boxes = [];
+      boxesLayer.innerHTML = '';
       isDrawingMode = false;
       updateDrawingState();
       renderBoxStatus();
