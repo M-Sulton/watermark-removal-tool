@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Video Watermark Remover Studio</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    .selection-box {
+      position: absolute;
+      border: 2px dashed #ef4444;
+      background: rgba(239, 68, 68, 0.25);
+      cursor: move;
+      pointer-events: auto;
+    }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen">
+  <div class="max-w-5xl mx-auto px-4 py-8">
+    <header class="border-b border-slate-800 pb-4 mb-6 flex items-center justify-between">
+      <div>
+        <h1 class="text-2xl font-bold text-white flex items-center gap-2">
+          <span>🎬</span> Video Watermark Remover
+        </h1>
+        <p class="text-xs text-slate-400 mt-1">Hapus logo, subtitle, atau watermark video via OpenCV & Delogo Inpainting</p>
+      </div>
+      <div class="text-xs text-emerald-400 border border-emerald-900 bg-emerald-950/60 px-3 py-1.5 rounded-full">
+        ● Server Engine Ready
+      </div>
+    </header>
+
+    <!-- Upload Card -->
+    <div id="uploadSection" class="bg-slate-900 border border-slate-800 rounded-xl p-6 text-center mb-6">
+      <input type="file" id="videoInput" accept="video/mp4,video/quicktime,video/webm" class="hidden">
+      <div onclick="document.getElementById('videoInput').click()" class="cursor-pointer border-2 border-dashed border-slate-700 hover:border-indigo-500 rounded-lg p-10 transition">
+        <div class="text-4xl mb-3">📤</div>
+        <p class="font-semibold text-slate-200">Klik atau geser file video ke sini</p>
+        <p class="text-xs text-slate-500 mt-1">Format didukung: MP4, MOV, WebM</p>
+      </div>
+      <div id="uploadProgress" class="hidden mt-4 text-xs text-indigo-400">Sedang mengupload dan membaca frame video...</div>
+    </div>
+
+    <!-- Workspace -->
+    <div id="workspace" class="hidden space-y-6">
+      <div class="bg-slate-900 border border-slate-800 rounded-xl p-5">
+        <div class="flex items-center justify-between mb-3">
+          <div>
+            <h2 class="font-semibold text-sm text-slate-200">1. Tandai Area Watermark (Tarik Kursor)</h2>
+            <p class="text-xs text-slate-400">Klik dan seret mouse di atas preview untuk menentukan posisi watermark.</p>
+          </div>
+          <div class="text-xs text-slate-400 font-mono" id="coordsInfo">X: 0 | Y: 0 | W: 0 | H: 0</div>
+        </div>
+
+        <div class="relative inline-block border border-slate-800 rounded overflow-hidden max-w-full bg-black select-none" id="canvasWrapper">
+          <img id="previewImg" class="max-h-[500px] w-auto block select-none" draggable="false">
+          <div id="boxOverlay" class="selection-box hidden"></div>
+        </div>
+
+        <!-- Controls -->
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-5 pt-4 border-t border-slate-800">
+          <div>
+            <label class="text-xs font-semibold text-slate-400 block mb-1">Metode Penghapusan</label>
+            <select id="modeSelect" class="w-full bg-slate-800 border border-slate-700 text-xs rounded px-3 py-2 text-white outline-none">
+              <option value="delogo">FFmpeg Delogo (Inpaint Border Interpolation - Cepat & Halus)</option>
+              <option value="blur">Box Blur (Samarkan Area)</option>
+              <option value="pixelate">Pixelate (Sensor Mozaik)</option>
+            </select>
+          </div>
+          <div class="flex items-end">
+            <button id="resetBoxBtn" class="w-full bg-slate-800 hover:bg-slate-700 text-xs py-2 rounded text-slate-300 font-medium transition">
+              Reset Area Seleksi
+            </button>
+          </div>
+          <div class="flex items-end">
+            <button id="processBtn" class="w-full bg-indigo-600 hover:bg-indigo-500 text-xs py-2 rounded text-white font-semibold shadow transition">
+              Mulai Hapus Watermark 🚀
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Result Card -->
+      <div id="resultCard" class="hidden bg-slate-900 border border-slate-800 rounded-xl p-5">
+        <h2 class="font-semibold text-sm text-slate-200 mb-3">2. Hasil Video Bersih</h2>
+        <div id="processingIndicator" class="text-xs text-amber-400 flex items-center gap-2 py-4">
+          <span class="animate-spin text-base">⏳</span>
+          <span>Sedang memproses video frame per frame... Mohon tunggu sebentar.</span>
+        </div>
+        <div id="videoContainer" class="hidden space-y-3">
+          <video id="resultVideo" controls class="w-full max-h-[460px] bg-black rounded border border-slate-800"></video>
+          <a id="downloadBtn" download="video_clean.mp4" class="inline-block bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium px-4 py-2 rounded shadow transition">
+            ⬇ Download Video Bersih
+          </a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let fileData = null;
+    let box = { x: 0, y: 0, w: 0, h: 0 };
+    let isDrawing = false;
+    let startX = 0, startY = 0;
+
+    const videoInput = document.getElementById('videoInput');
+    const uploadProgress = document.getElementById('uploadProgress');
+    const workspace = document.getElementById('workspace');
+    const previewImg = document.getElementById('previewImg');
+    const boxOverlay = document.getElementById('boxOverlay');
+    const canvasWrapper = document.getElementById('canvasWrapper');
+    const coordsInfo = document.getElementById('coordsInfo');
+    const processBtn = document.getElementById('processBtn');
+    const resetBoxBtn = document.getElementById('resetBoxBtn');
+    const resultCard = document.getElementById('resultCard');
+    const processingIndicator = document.getElementById('processingIndicator');
+    const videoContainer = document.getElementById('videoContainer');
+    const resultVideo = document.getElementById('resultVideo');
+    const downloadBtn = document.getElementById('downloadBtn');
+
+    videoInput.addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      uploadProgress.classList.remove('hidden');
+      const fd = new FormData();
+      fd.append('file', file);
+
+      try {
+        const res = await fetch('api/upload', { method: 'POST', body: fd });
+        if (!res.ok) throw new Error(await res.text());
+        fileData = await res.json();
+
+        previewImg.src = fileData.preview_url;
+        previewImg.onload = () => {
+          uploadProgress.classList.add('hidden');
+          workspace.classList.remove('hidden');
+          boxOverlay.classList.add('hidden');
+        };
+      } catch (err) {
+        alert('Upload gagal: ' + err.message);
+        uploadProgress.classList.add('hidden');
+      }
+    });
+
+    // Drawing box on image
+    canvasWrapper.addEventListener('mousedown', (e) => {
+      if (!fileData) return;
+      const rect = previewImg.getBoundingClientRect();
+      startX = e.clientX - rect.left;
+      startY = e.clientY - rect.top;
+      isDrawing = true;
+
+      boxOverlay.style.left = startX + 'px';
+      boxOverlay.style.top = startY + 'px';
+      boxOverlay.style.width = '0px';
+      boxOverlay.style.height = '0px';
+      boxOverlay.classList.remove('hidden');
+    });
+
+    window.addEventListener('mousemove', (e) => {
+      if (!isDrawing) return;
+      const rect = previewImg.getBoundingClientRect();
+      const currentX = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
+      const currentY = Math.max(0, Math.min(e.clientY - rect.top, rect.height));
+
+      const x = Math.min(startX, currentX);
+      const y = Math.min(startY, currentY);
+      const w = Math.abs(currentX - startX);
+      const h = Math.abs(currentY - startY);
+
+      boxOverlay.style.left = x + 'px';
+      boxOverlay.style.top = y + 'px';
+      boxOverlay.style.width = w + 'px';
+      boxOverlay.style.height = h + 'px';
+
+      // Scale to original resolution
+      const scaleX = fileData.width / rect.width;
+      const scaleY = fileData.height / rect.height;
+
+      box = {
+        x: Math.round(x * scaleX),
+        y: Math.round(y * scaleY),
+        w: Math.round(w * scaleX),
+        h: Math.round(h * scaleY)
+      };
+
+      coordsInfo.innerText = `X: ${box.x} | Y: ${box.y} | W: ${box.w} | H: ${box.h} (Skala Asli)`;
+    });
+
+    window.addEventListener('mouseup', () => {
+      isDrawing = false;
+    });
+
+    resetBoxBtn.addEventListener('click', () => {
+      boxOverlay.classList.add('hidden');
+      box = { x: 0, y: 0, w: 0, h: 0 };
+      coordsInfo.innerText = 'X: 0 | Y: 0 | W: 0 | H: 0';
+    });
+
+    processBtn.addEventListener('click', async () => {
+      if (!fileData || box.w <= 0 || box.h <= 0) {
+        alert('Tandai area watermark di gambar preview terlebih dahulu!');
+        return;
+      }
+
+      resultCard.classList.remove('hidden');
+      processingIndicator.classList.remove('hidden');
+      videoContainer.classList.add('hidden');
+
+      const fd = new FormData();
+      fd.append('file_id', fileData.file_id);
+      fd.append('x', box.x);
+      fd.append('y', box.y);
+      fd.append('w', box.w);
+      fd.append('h', box.h);
+      fd.append('mode', document.getElementById('modeSelect').value);
+
+      try {
+        const res = await fetch('api/remove', { method: 'POST', body: fd });
+        const data = await res.json();
+        pollStatus(data.job_id);
+      } catch (err) {
+        alert('Gagal memproses video: ' + err.message);
+        processingIndicator.classList.add('hidden');
+      }
+    });
+
+    async function pollStatus(jobId) {
+      const interval = setInterval(async () => {
+        try {
+          const res = await fetch(`api/status/${jobId}`);
+          const job = await res.json();
+          if (job.status === 'completed') {
+            clearInterval(interval);
+            processingIndicator.classList.add('hidden');
+            videoContainer.classList.remove('hidden');
+            resultVideo.src = job.output;
+            downloadBtn.href = job.output;
+          } else if (job.status === 'failed') {
+            clearInterval(interval);
+            processingIndicator.classList.add('hidden');
+            alert('Pemrosesan gagal: ' + job.error);
+          }
+        } catch (e) {
+          clearInterval(interval);
+        }
+      }, 1500);
+    }
+  </script>
+</body>
+</html>
