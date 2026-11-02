@@ -8,10 +8,29 @@
   <style>
     .selection-box {
       position: absolute;
-      border: 2px dashed #ef4444;
-      background: rgba(239, 68, 68, 0.25);
-      cursor: move;
-      pointer-events: auto;
+      border: 2px solid #ef4444;
+      background: rgba(239, 68, 68, 0.28);
+      pointer-events: none;
+      box-sizing: border-box;
+    }
+    .selection-box.box-0 {
+      border-color: #3b82f6;
+      background: rgba(59, 130, 246, 0.3);
+    }
+    .selection-box.box-1 {
+      border-color: #10b981;
+      background: rgba(16, 185, 129, 0.3);
+    }
+    .box-badge {
+      position: absolute;
+      top: -20px;
+      left: 0;
+      font-size: 10px;
+      font-weight: bold;
+      padding: 1px 6px;
+      border-radius: 4px;
+      color: white;
+      white-space: nowrap;
     }
   </style>
 </head>
@@ -22,10 +41,10 @@
         <h1 class="text-2xl font-bold text-white flex items-center gap-2">
           <span>🎬</span> Video Watermark Remover
         </h1>
-        <p class="text-xs text-slate-400 mt-1">Hapus logo, subtitle, atau watermark video via OpenCV & Delogo Inpainting</p>
+        <p class="text-xs text-slate-400 mt-1">Hapus hingga 2 area watermark / logo sekaligus secara presisi</p>
       </div>
       <div class="text-xs text-emerald-400 border border-emerald-900 bg-emerald-950/60 px-3 py-1.5 rounded-full">
-        ● Server Engine Ready
+        ● Multi-Area Support (Max 2 Area)
       </div>
     </header>
 
@@ -37,43 +56,65 @@
         <p class="font-semibold text-slate-200">Klik atau geser file video ke sini</p>
         <p class="text-xs text-slate-500 mt-1">Format didukung: MP4, MOV, WebM</p>
       </div>
-      <div id="uploadProgress" class="hidden mt-4 text-xs text-indigo-400">Sedang mengupload dan membaca frame video...</div>
+      <div id="uploadProgress" class="hidden mt-4 text-xs text-indigo-400">Sedang mengupload dan membaca video...</div>
     </div>
 
     <!-- Workspace -->
     <div id="workspace" class="hidden space-y-6">
       <div class="bg-slate-900 border border-slate-800 rounded-xl p-5">
+        
+        <!-- Video Player & Marker Section -->
         <div class="flex items-center justify-between mb-3">
           <div>
-            <h2 class="font-semibold text-sm text-slate-200">1. Tandai Area Watermark (Tarik Kursor)</h2>
-            <p class="text-xs text-slate-400">Klik dan seret mouse di atas preview untuk menentukan posisi watermark.</p>
+            <h2 class="font-semibold text-sm text-slate-200">1. Video Preview & Seleksi Kotak</h2>
+            <p class="text-xs text-slate-400">Putar video ke frame watermark. Klik tombol <span class="text-indigo-400 font-semibold">"Tandai Watermark"</span> lalu seret kursor pada video. Maksimal 2 kotak.</p>
           </div>
-          <div class="text-xs text-slate-400 font-mono" id="coordsInfo">X: 0 | Y: 0 | W: 0 | H: 0</div>
+          <div class="text-xs font-mono text-slate-400" id="boxCountBadge">0 / 2 Area Ditandai</div>
         </div>
 
-        <div class="relative inline-block border border-slate-800 rounded overflow-hidden max-w-full bg-black select-none" id="canvasWrapper">
-          <img id="previewImg" class="max-h-[500px] w-auto block select-none" draggable="false">
-          <div id="boxOverlay" class="selection-box hidden"></div>
+        <!-- Video Player with Overlay Canvas -->
+        <div class="relative bg-black rounded-lg overflow-hidden border border-slate-800 flex justify-center items-center select-none" id="playerContainer">
+          <video id="playerVideo" controls playsinline class="max-h-[500px] w-auto max-w-full block"></video>
+          
+          <!-- Drawing Overlay Surface -->
+          <div id="drawOverlay" class="absolute inset-0 cursor-crosshair hidden z-20">
+            <!-- Dynamic selection boxes appear here -->
+          </div>
         </div>
 
-        <!-- Controls -->
+        <!-- Toolbar for marking -->
+        <div class="flex flex-wrap items-center justify-between gap-3 mt-3 pt-3 border-t border-slate-800">
+          <div class="flex items-center gap-2">
+            <button id="toggleDrawBtn" class="bg-indigo-600 hover:bg-indigo-500 text-white text-xs px-4 py-2 rounded font-medium transition shadow flex items-center gap-1.5">
+              <span>✏️</span> <span id="toggleDrawText">Mulai Gambar Kotak</span>
+            </button>
+            <button id="resetBoxesBtn" class="bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs px-3 py-2 rounded font-medium transition">
+              Reset Semua Kotak
+            </button>
+          </div>
+          <div id="boxListInfo" class="text-xs font-mono text-slate-400 flex gap-3">
+            <span class="text-slate-500">Belum ada watermark dipilih</span>
+          </div>
+        </div>
+
+        <!-- Mode & Execution -->
         <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-5 pt-4 border-t border-slate-800">
           <div>
             <label class="text-xs font-semibold text-slate-400 block mb-1">Metode Penghapusan</label>
             <select id="modeSelect" class="w-full bg-slate-800 border border-slate-700 text-xs rounded px-3 py-2 text-white outline-none">
-              <option value="delogo">FFmpeg Delogo (Inpaint Border Interpolation - Cepat & Halus)</option>
-              <option value="blur">Box Blur (Samarkan Area)</option>
+              <option value="blur" selected>Box Blur (Paling Halus & Direkomendasikan)</option>
+              <option value="delogo">FFmpeg Delogo (Inpaint Border Interpolation)</option>
               <option value="pixelate">Pixelate (Sensor Mozaik)</option>
             </select>
           </div>
           <div class="flex items-end">
-            <button id="resetBoxBtn" class="w-full bg-slate-800 hover:bg-slate-700 text-xs py-2 rounded text-slate-300 font-medium transition">
-              Reset Area Seleksi
-            </button>
+            <div class="text-xs text-slate-500">
+              Tips: Jeda (Pause) video pada detik yang diinginkan agar watermark tidak bergeser saat ditandai.
+            </div>
           </div>
           <div class="flex items-end">
-            <button id="processBtn" class="w-full bg-indigo-600 hover:bg-indigo-500 text-xs py-2 rounded text-white font-semibold shadow transition">
-              Mulai Hapus Watermark 🚀
+            <button id="processBtn" class="w-full bg-emerald-600 hover:bg-emerald-500 text-xs py-2.5 rounded text-white font-semibold shadow transition">
+              Mulai Hapus Watermark (2 Area) 🚀
             </button>
           </div>
         </div>
@@ -84,7 +125,7 @@
         <h2 class="font-semibold text-sm text-slate-200 mb-3">2. Hasil Video Bersih</h2>
         <div id="processingIndicator" class="text-xs text-amber-400 flex items-center gap-2 py-4">
           <span class="animate-spin text-base">⏳</span>
-          <span>Sedang memproses video frame per frame... Mohon tunggu sebentar.</span>
+          <span>Sedang memproses video dengan FFmpeg... Mohon tunggu.</span>
         </div>
         <div id="videoContainer" class="hidden space-y-3">
           <video id="resultVideo" controls class="w-full max-h-[460px] bg-black rounded border border-slate-800"></video>
@@ -98,19 +139,23 @@
 
   <script>
     let fileData = null;
-    let box = { x: 0, y: 0, w: 0, h: 0 };
-    let isDrawing = false;
+    let boxes = []; // [{x, y, w, h, screenX, screenY, screenW, screenH}]
+    let isDrawingMode = false;
+    let isMouseDown = false;
     let startX = 0, startY = 0;
+    let activeBoxEl = null;
 
     const videoInput = document.getElementById('videoInput');
     const uploadProgress = document.getElementById('uploadProgress');
     const workspace = document.getElementById('workspace');
-    const previewImg = document.getElementById('previewImg');
-    const boxOverlay = document.getElementById('boxOverlay');
-    const canvasWrapper = document.getElementById('canvasWrapper');
-    const coordsInfo = document.getElementById('coordsInfo');
+    const playerVideo = document.getElementById('playerVideo');
+    const drawOverlay = document.getElementById('drawOverlay');
+    const toggleDrawBtn = document.getElementById('toggleDrawBtn');
+    const toggleDrawText = document.getElementById('toggleDrawText');
+    const resetBoxesBtn = document.getElementById('resetBoxesBtn');
+    const boxCountBadge = document.getElementById('boxCountBadge');
+    const boxListInfo = document.getElementById('boxListInfo');
     const processBtn = document.getElementById('processBtn');
-    const resetBoxBtn = document.getElementById('resetBoxBtn');
     const resultCard = document.getElementById('resultCard');
     const processingIndicator = document.getElementById('processingIndicator');
     const videoContainer = document.getElementById('videoContainer');
@@ -130,36 +175,66 @@
         if (!res.ok) throw new Error(await res.text());
         fileData = await res.json();
 
-        previewImg.src = fileData.preview_url;
-        previewImg.onload = () => {
-          uploadProgress.classList.add('hidden');
-          workspace.classList.remove('hidden');
-          boxOverlay.classList.add('hidden');
-        };
+        playerVideo.src = fileData.video_url;
+        uploadProgress.classList.add('hidden');
+        workspace.classList.remove('hidden');
+        clearBoxes();
       } catch (err) {
         alert('Upload gagal: ' + err.message);
         uploadProgress.classList.add('hidden');
       }
     });
 
-    // Drawing box on image
-    canvasWrapper.addEventListener('mousedown', (e) => {
-      if (!fileData) return;
-      const rect = previewImg.getBoundingClientRect();
+    toggleDrawBtn.addEventListener('click', () => {
+      if (boxes.length >= 2) {
+        alert('Maksimal 2 kotak watermark sudah tercapai. Klik "Reset Semua Kotak" untuk mengulang.');
+        return;
+      }
+      isDrawingMode = !isDrawingMode;
+      updateDrawingState();
+    });
+
+    function updateDrawingState() {
+      if (isDrawingMode) {
+        drawOverlay.classList.remove('hidden');
+        toggleDrawBtn.classList.replace('bg-indigo-600', 'bg-amber-600');
+        toggleDrawBtn.classList.replace('hover:bg-indigo-500', 'hover:bg-amber-500');
+        toggleDrawText.innerText = 'Selesai / Batal Gambar';
+        playerVideo.pause(); // Pause saat menggambar agar stabil
+      } else {
+        drawOverlay.classList.add('hidden');
+        toggleDrawBtn.classList.replace('bg-amber-600', 'bg-indigo-600');
+        toggleDrawBtn.classList.replace('hover:bg-amber-500', 'hover:bg-indigo-500');
+        toggleDrawText.innerText = 'Mulai Gambar Kotak';
+      }
+    }
+
+    // Mouse events on overlay
+    drawOverlay.addEventListener('mousedown', (e) => {
+      if (!isDrawingMode || boxes.length >= 2) return;
+      const rect = drawOverlay.getBoundingClientRect();
       startX = e.clientX - rect.left;
       startY = e.clientY - rect.top;
-      isDrawing = true;
+      isMouseDown = true;
 
-      boxOverlay.style.left = startX + 'px';
-      boxOverlay.style.top = startY + 'px';
-      boxOverlay.style.width = '0px';
-      boxOverlay.style.height = '0px';
-      boxOverlay.classList.remove('hidden');
+      activeBoxEl = document.createElement('div');
+      activeBoxEl.className = `selection-box box-${boxes.length}`;
+      activeBoxEl.style.left = startX + 'px';
+      activeBoxEl.style.top = startY + 'px';
+      activeBoxEl.style.width = '0px';
+      activeBoxEl.style.height = '0px';
+
+      const badge = document.createElement('div');
+      badge.className = `box-badge ${boxes.length === 0 ? 'bg-blue-600' : 'bg-emerald-600'}`;
+      badge.innerText = `Watermark #${boxes.length + 1}`;
+      activeBoxEl.appendChild(badge);
+
+      drawOverlay.appendChild(activeBoxEl);
     });
 
     window.addEventListener('mousemove', (e) => {
-      if (!isDrawing) return;
-      const rect = previewImg.getBoundingClientRect();
+      if (!isMouseDown || !activeBoxEl) return;
+      const rect = drawOverlay.getBoundingClientRect();
       const currentX = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
       const currentY = Math.max(0, Math.min(e.clientY - rect.top, rect.height));
 
@@ -168,38 +243,89 @@
       const w = Math.abs(currentX - startX);
       const h = Math.abs(currentY - startY);
 
-      boxOverlay.style.left = x + 'px';
-      boxOverlay.style.top = y + 'px';
-      boxOverlay.style.width = w + 'px';
-      boxOverlay.style.height = h + 'px';
+      activeBoxEl.style.left = x + 'px';
+      activeBoxEl.style.top = y + 'px';
+      activeBoxEl.style.width = w + 'px';
+      activeBoxEl.style.height = h + 'px';
+    });
 
-      // Scale to original resolution
-      const scaleX = fileData.width / rect.width;
-      const scaleY = fileData.height / rect.height;
+    window.addEventListener('mouseup', (e) => {
+      if (!isMouseDown) return;
+      isMouseDown = false;
 
-      box = {
-        x: Math.round(x * scaleX),
-        y: Math.round(y * scaleY),
-        w: Math.round(w * scaleX),
-        h: Math.round(h * scaleY)
+      if (!activeBoxEl) return;
+      const rect = drawOverlay.getBoundingClientRect();
+      const currentX = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
+      const currentY = Math.max(0, Math.min(e.clientY - rect.top, rect.height));
+
+      const screenX = Math.min(startX, currentX);
+      const screenY = Math.min(startY, currentY);
+      const screenW = Math.abs(currentX - startX);
+      const screenH = Math.abs(currentY - startY);
+
+      // Jika drag terlalu kecil (klik tidak sengaja), buang
+      if (screenW < 8 || screenH < 8) {
+        activeBoxEl.remove();
+        activeBoxEl = null;
+        return;
+      }
+
+      // Hitung koordinat video asli
+      const videoRect = playerVideo.getBoundingClientRect();
+      const scaleX = fileData.width / videoRect.width;
+      const scaleY = fileData.height / videoRect.height;
+
+      const realBox = {
+        x: Math.round(screenX * scaleX),
+        y: Math.round(screenY * scaleY),
+        w: Math.round(screenW * scaleX),
+        h: Math.round(screenH * scaleY),
+        el: activeBoxEl
       };
 
-      coordsInfo.innerText = `X: ${box.x} | Y: ${box.y} | W: ${box.w} | H: ${box.h} (Skala Asli)`;
+      boxes.push(realBox);
+      activeBoxEl = null;
+      renderBoxStatus();
+
+      if (boxes.length >= 2) {
+        isDrawingMode = false;
+        updateDrawingState();
+      }
     });
 
-    window.addEventListener('mouseup', () => {
-      isDrawing = false;
-    });
+    function renderBoxStatus() {
+      boxCountBadge.innerText = `${boxes.length} / 2 Area Ditandai`;
+      if (boxes.length === 0) {
+        boxListInfo.innerHTML = '<span class="text-slate-500">Belum ada watermark dipilih</span>';
+      } else {
+        boxListInfo.innerHTML = boxes.map((b, idx) => `
+          <span class="inline-flex items-center gap-1.5 ${idx === 0 ? 'text-blue-400' : 'text-emerald-400'}">
+            <span class="w-2 h-2 rounded-full ${idx === 0 ? 'bg-blue-500' : 'bg-emerald-500'}"></span>
+            #${idx + 1}: ${b.w}x${b.h}px (x:${b.x}, y:${b.y})
+          </span>
+        `).join('');
+      }
+    }
 
-    resetBoxBtn.addEventListener('click', () => {
-      boxOverlay.classList.add('hidden');
-      box = { x: 0, y: 0, w: 0, h: 0 };
-      coordsInfo.innerText = 'X: 0 | Y: 0 | W: 0 | H: 0';
-    });
+    function clearBoxes() {
+      boxes.forEach(b => {
+        if (b.el && b.el.parentNode) b.el.remove();
+      });
+      boxes = [];
+      isDrawingMode = false;
+      updateDrawingState();
+      renderBoxStatus();
+    }
+
+    resetBoxesBtn.addEventListener('click', clearBoxes);
 
     processBtn.addEventListener('click', async () => {
-      if (!fileData || box.w <= 0 || box.h <= 0) {
-        alert('Tandai area watermark di gambar preview terlebih dahulu!');
+      if (!fileData) {
+        alert('Silakan upload video terlebih dahulu!');
+        return;
+      }
+      if (boxes.length === 0) {
+        alert('Tandai minimal 1 kotak watermark!');
         return;
       }
 
@@ -207,17 +333,20 @@
       processingIndicator.classList.remove('hidden');
       videoContainer.classList.add('hidden');
 
-      const fd = new FormData();
-      fd.append('file_id', fileData.file_id);
-      fd.append('x', box.x);
-      fd.append('y', box.y);
-      fd.append('w', box.w);
-      fd.append('h', box.h);
-      fd.append('mode', document.getElementById('modeSelect').value);
+      const payload = {
+        file_id: fileData.file_id,
+        boxes: boxes.map(b => ({ x: b.x, y: b.y, w: b.w, h: b.h })),
+        mode: document.getElementById('modeSelect').value
+      };
 
       try {
-        const res = await fetch('api/remove', { method: 'POST', body: fd });
+        const res = await fetch('api/remove', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
         const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Gagal memproses');
         pollStatus(data.job_id);
       } catch (err) {
         alert('Gagal memproses video: ' + err.message);

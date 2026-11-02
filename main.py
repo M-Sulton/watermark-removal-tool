@@ -1,15 +1,14 @@
 import os
 import json
 import uuid
-import shutil
-import asyncio
 import subprocess
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 BASE_DIR = Path(__file__).resolve().parent
 UPLOAD_DIR = BASE_DIR / "uploads"
@@ -52,27 +51,55 @@ def get_video_meta(path: str):
         "has_audio": has_audio
     }
 
-def process_watermark(job_id: str, input_path: str, output_path: str,
-                      x: int, y: int, w: int, h: int, mode: str):
+def build_filter_chain(boxes: list, mode: str, vw: int, vh: int) -> str:
+    # Build filter for single or multiple boxes
+    # Supported modes: blur, delogo, pixelate
+    clamped = []
+    for b in boxes:
+        x = max(1, min(int(b["x"]), vw - 2))
+        y = max(1, min(int(b["y"]), vh - 2))
+        w = max(2, min(int(b["w"]), vw - x - 1))
+        h = max(2, min(int(b["h"]), vh - y - 1))
+        clamped.append({"x": x, "y": y, "w": w, "h": h})
+
+    if not clamped:
+        return ""
+
+    if mode == "delogo":
+        # Chain multiple delogos: delogo=x=..:y=..:w=..:h=..,delogo=...
+        return ",".join([f"delogo=x={b['x']}:y={b['y']}:w={b['w']}:h={b['h']}" for b in clamped])
+
+    # For blur and pixelate, chain using split and overlays
+    # [in]split=N+1[main][c1][c2]... then overlay iteratively
+    n = len(clamped)
+    splits = "".join([f"[c{i}]" for i in range(n)])
+    filters = [f"split={n+1}[base]{splits}"]
+
+    current_base = "base"
+    for i, b in enumerate(clamped):
+        x, y, w, h = b["x"], b["y"], b["w"], b["h"]
+        if mode == "pixelate":
+            process = f"crop={w}:{h}:{x}:{y},scale=iw/16:ih/16,scale={w}:{h}:flags=neighbor"
+        else: # blur
+            process = f"crop={w}:{h}:{x}:{y},boxblur=luma_radius=15:luma_power=3"
+
+        out_name = f"out{i}"
+        filters.append(f"[c{i}]{process}[clean{i}]")
+        filters.append(f"[{current_base}][clean{i}]overlay={x}:{y}[{out_name}]")
+        current_base = out_name
+
+    # Last output alias is final stream, but ffmpeg takes last unnamed output, strip the last bracket or map
+    # Simplest: connect final out to clean
+    filter_graph = ";".join(filters)
+    return filter_graph
+
+def process_watermark(job_id: str, input_path: str, output_path: str, boxes: list, mode: str):
     try:
         JOBS[job_id]["status"] = "processing"
         meta = get_video_meta(input_path)
         vw, vh = meta["width"], meta["height"]
 
-        # Clamp box agar tidak keluar frame
-        x = max(1, min(x, vw - 2))
-        y = max(1, min(y, vh - 2))
-        w = max(2, min(w, vw - x - 1))
-        h = max(2, min(h, vh - y - 1))
-
-        if mode == "delogo":
-            vf = f"delogo=x={x}:y={y}:w={w}:h={h}"
-        elif mode == "blur":
-            vf = f"split[a][b];[b]crop={w}:{h}:{x}:{y},boxblur=luma_radius=15:luma_power=3[clean];[a][clean]overlay={x}:{y}"
-        elif mode == "pixelate":
-            vf = f"split[a][b];[b]crop={w}:{h}:{x}:{y},scale=iw/16:ih/16,scale={w}:{h}:flags=neighbor[clean];[a][clean]overlay={x}:{y}"
-        else:
-            vf = f"delogo=x={x}:y={y}:w={w}:h={h}"
+        vf = build_filter_chain(boxes, mode, vw, vh)
 
         cmd = [
             "ffmpeg", "-y", "-v", "error",
@@ -111,7 +138,6 @@ async def upload_video(file: UploadFile = File(...)):
 
         meta = get_video_meta(str(raw_path))
 
-        # Ekstrak 1 frame (detik 0.1 atau 0.0) untuk kanvas UI
         seek_pos = "0.5" if meta["duration"] > 1.0 else "0.0"
         cmd_thumb = [
             "ffmpeg", "-y", "-v", "error",
@@ -136,20 +162,23 @@ async def upload_video(file: UploadFile = File(...)):
             thumb_path.unlink()
         raise HTTPException(status_code=400, detail=f"Gagal memproses file: {str(err)}")
 
+class RemoveRequest(BaseModel):
+    file_id: str
+    boxes: list # list of dict {x, y, w, h}
+    mode: str = "blur"
+
 @app.post("/api/remove")
-async def remove_watermark(
-    background_tasks: BackgroundTasks,
-    file_id: str = Form(...),
-    x: int = Form(...),
-    y: int = Form(...),
-    w: int = Form(...),
-    h: int = Form(...),
-    mode: str = Form("delogo")
-):
-    matches = list(UPLOAD_DIR.glob(f"{file_id}.*"))
+async def remove_watermark(payload: RemoveRequest, background_tasks: BackgroundTasks):
+    matches = list(UPLOAD_DIR.glob(f"{payload.file_id}.*"))
     if not matches:
         raise HTTPException(status_code=404, detail="File video tidak ditemukan")
     src = matches[0]
+
+    if not payload.boxes:
+        raise HTTPException(status_code=400, detail="Minimal tandai 1 kotak watermark")
+
+    # Batasi maksimal 2 watermark sesuai request
+    boxes = payload.boxes[:2]
 
     job_id = str(uuid.uuid4())[:8]
     out_file = PROCESSED_DIR / f"clean_{job_id}.mp4"
@@ -162,7 +191,7 @@ async def remove_watermark(
 
     background_tasks.add_task(
         process_watermark,
-        job_id, str(src), str(out_file), x, y, w, h, mode
+        job_id, str(src), str(out_file), boxes, payload.mode
     )
 
     return {"job_id": job_id, "status": "queued"}
